@@ -38,6 +38,9 @@ app.use(cookieParser());
 app.use(auth);
 app.use('/uploads', express.static(uploadsDir));
 
+app.get('/api/health', (_req, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));
+
+
 async function getRecord(entity, recordId) { const result = await pool.query('SELECT * FROM records WHERE entity=$1 AND id=$2', [entity, recordId]); return present(result.rows[0]); }
 async function getTournament(tournamentId) { return tournamentId ? getRecord('Tournament', tournamentId) : null; }
 async function records(entity, filter = {}, sort = 'created_date', limit = 100) {
@@ -86,5 +89,11 @@ app.post('/api/functions/validateFixture', requireAuth, route(async (req, res) =
 const upload = multer({ storage: multer.diskStorage({ destination: uploadsDir, filename: (_req, file, cb) => cb(null, `${id()}${path.extname(file.originalname)}`) }) });
 app.post('/api/uploads', requireAuth, upload.single('file'), (req, res) => res.json({ file_url: `/uploads/${req.file.filename}` }));
 app.use((error, _req, res, _next) => { console.error(error); res.status(500).json({ error: 'Internal server error' }); });
-const server = app.listen(Number(process.env.PORT || 3001), () => console.log(`Local API listening on http://localhost:${process.env.PORT || 3001}`));
-server.on('error', (error) => { if (error.code === 'EADDRINUSE') console.warn(`Local API is already running on port ${process.env.PORT || 3001}; using the existing instance.`); else throw error; });
+if (!process.env.VERCEL) {
+  const server = app.listen(Number(process.env.PORT || 3001), () => console.log(`Local API listening on http://localhost:${process.env.PORT || 3001}`));
+  server.on('error', (error) => { if (error.code === 'EADDRINUSE') console.warn(`Local API is already running on port ${process.env.PORT || 3001}; using the existing instance.`); else throw error; });
+}
+
+export { app };
+export default app;
+
