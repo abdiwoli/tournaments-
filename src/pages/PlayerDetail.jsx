@@ -3,9 +3,9 @@ const db = globalThis.__LOCAL_DB__;
 import React, { useEffect, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 
-import { computePlayerStats } from "@/lib/playerStats";
 import TeamAvatar from "@/components/team/TeamAvatar";
-import { ArrowLeft, Target, Zap, Trophy, Activity, Square } from "lucide-react";
+import { ArrowLeft, Target, Zap, Trophy, Activity } from "lucide-react";
+
 
 export default function PlayerDetail() {
   const { id } = useParams();
