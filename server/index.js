@@ -15,13 +15,43 @@ dotenv.config({ path: path.resolve(root, '.env.local') });
 dotenv.config({ path: path.resolve(root, '.env') });
 if (!process.env.DATABASE_URL) throw new Error('DATABASE_URL is required. Set it in .env.local or .env.');
 
-const dataDir = path.resolve(root, 'data');
-const uploadsDir = path.resolve(root, 'uploads');
-fs.mkdirSync(dataDir, { recursive: true });
-fs.mkdirSync(uploadsDir, { recursive: true });
-const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: process.env.DATABASE_URL.includes('sslmode=require') ? { rejectUnauthorized: false } : undefined });
-const schema = fs.readFileSync(path.resolve(root, 'server/schema.sql'), 'utf8');
+const uploadsDir = process.env.VERCEL ? '/tmp/uploads' : path.resolve(root, 'uploads');
+try {
+  fs.mkdirSync(uploadsDir, { recursive: true });
+} catch {
+  // Ignore error if filesystem is read-only
+}
+
+const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: process.env.DATABASE_URL.includes('sslmode=') || process.env.VERCEL ? { rejectUnauthorized: false } : undefined });
+const schema = `
+CREATE TABLE IF NOT EXISTS users (
+  id TEXT PRIMARY KEY,
+  email TEXT UNIQUE NOT NULL,
+  password_hash TEXT NOT NULL,
+  full_name TEXT,
+  role TEXT NOT NULL DEFAULT 'user',
+  created_date TIMESTAMPTZ NOT NULL,
+  google_id TEXT UNIQUE
+);
+
+CREATE TABLE IF NOT EXISTS records (
+  entity TEXT NOT NULL,
+  id TEXT PRIMARY KEY,
+  data JSONB NOT NULL,
+  created_date TIMESTAMPTZ NOT NULL,
+  updated_date TIMESTAMPTZ NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_records_entity ON records(entity);
+
+CREATE TABLE IF NOT EXISTS password_resets (
+  token TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  expires_at BIGINT NOT NULL
+);
+`;
 await pool.query(schema);
+
 
 const entities = new Set(['Tournament', 'Team', 'Player', 'Match', 'TournamentPermission', 'Goal', 'Appearance']);
 const secret = process.env.JWT_SECRET || 'development-only-change-me';
