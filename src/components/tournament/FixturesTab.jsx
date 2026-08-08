@@ -196,7 +196,7 @@ export default function FixturesTab({ tournament, teams, matches, perms, reload 
       )}
 
       <FixtureForm open={showForm} onClose={() => { setShowForm(false); setEditingMatch(null); }} onSave={saveFixture} tournament={tournament} teams={teams} existingMatches={matches} match={editingMatch} />
-      {showParser && <SmartResultParser open={showParser} onClose={() => setShowParser(false)} tournament={tournament} teams={teams} matches={matches} reload={reload} />}
+      {showParser && <SmartResultParser open={showParser} onClose={() => setShowParser(false)} tournament={tournament} teams={teams} matches={matches} currentRound={currentRound} reload={reload} />}
     </div>
   );
 }

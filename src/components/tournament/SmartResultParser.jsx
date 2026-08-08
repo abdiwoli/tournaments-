@@ -10,8 +10,10 @@ import { Label } from "@/components/ui/label";
 import { Check, AlertTriangle, Sparkles, UserPlus, Trophy, UserCheck } from "lucide-react";
 import TeamAvatar from "@/components/team/TeamAvatar";
 import { parseWhatsAppReport, suggestClosest } from "@/lib/whatsappParser";
+import { isCompletedFixture, resolveFixture } from "@/lib/fixtureResolver";
 
 const extractError = (e) => e?.response?.data?.error || e?.message || "Unknown error";
+const teamByIdSafe = (teams, id) => teams.find((team) => team.id === id)?.name || "TBD";
 const norm = (s) => (s || "").toLowerCase().trim().replace(/\s+/g, " ");
 const nameMatch = (a, b) => {
   const na = norm(a), nb = norm(b);
@@ -30,7 +32,7 @@ const StatBadges = ({ s }) => {
   return <span className="text-sm">{parts.reduce((acc, p, i) => i === 0 ? [p] : [...acc, <span key={`sep${i}`} className="mx-1 text-muted-foreground">·</span>, p], [])}</span>;
 };
 
-export default function SmartResultParser({ open, onClose, tournament, teams, matches, reload }) {
+export default function SmartResultParser({ open, onClose, tournament, teams, matches, currentRound, reload }) {
   const [text, setText] = useState("");
   const [parsing, setParsing] = useState(false);
   const [parsed, setParsed] = useState(null);
@@ -40,16 +42,17 @@ export default function SmartResultParser({ open, onClose, tournament, teams, ma
   const [homePlayers, setHomePlayers] = useState([]);
   const [awayPlayers, setAwayPlayers] = useState([]);
   const [participants, setParticipants] = useState([]);
-  const [motm, setMotm] = useState({ name: "", playerId: "", action: "none" });
+  const [motm, setMotm] = useState({ name: "", playerId: "", action: "none", awardType: "", team: "" });
   const [aIsHome, setAIsHome] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [warnings, setWarnings] = useState([]);
+  const [editingCompleted, setEditingCompleted] = useState(false);
 
   const reset = () => {
     setText(""); setParsed(null); setHomeTeamId(""); setAwayTeamId("");
-    setMatchId(""); setHomePlayers([]); setAwayPlayers([]); setParticipants([]);
-    setMotm({ name: "", playerId: "", action: "none" }); setAIsHome(true); setError(""); setWarnings([]);
+    setMatchId(""); setHomePlayers([]); setAwayPlayers([]); setParticipants([]); setEditingCompleted(false);
+    setMotm({ name: "", playerId: "", action: "none", awardType: "", team: "" }); setAIsHome(true); setError(""); setWarnings([]);
   };
 
   const close = () => { reset(); onClose(); };
@@ -58,7 +61,7 @@ export default function SmartResultParser({ open, onClose, tournament, teams, ma
     if (!text.trim()) return;
     setParsing(true); setError("");
     try {
-      const parsed = parseWhatsAppReport(text, teams.map((t) => t.name));
+      const parsed = parseWhatsAppReport(text, teams);
       const result = {
         team_a: parsed.homeTeam,
         team_b: parsed.awayTeam,
@@ -71,24 +74,32 @@ export default function SmartResultParser({ open, onClose, tournament, teams, ma
           .filter((p) => p.team === parsed.awayTeam)
           .map((p) => ({ name: p.name, goals: p.goals, assists: p.assists, yellow_cards: 0, red_cards: 0 })),
         motm: parsed.manOfTheMatch,
+        awardType: parsed.awardType,
+        awardTeam: parsed.awardTeam,
       };
       setWarnings(parsed.warnings || []);
       setParsed(result);
 
-      const teamA = teams.find((t) => nameMatch(t.name, result.team_a));
-      const teamB = teams.find((t) => nameMatch(t.name, result.team_b));
+      const resolution = resolveFixture({ text, teams, matches, currentRound });
+      const [teamA, teamB] = resolution.detectedTeams;
 
       if (!teamA || !teamB) {
-        setError(`Could not match report teams to tournament teams. Found: "${result.team_a}" and "${result.team_b}". Please check the team names.`);
+        setError(`Could not resolve two report teams to registered tournament teams. Found: "${result.team_a}" and "${result.team_b}". Please check the team names.`);
         setParsing(false); return;
       }
 
-      const teamsMatch = (m) =>
-        (m.home_team_id === teamA.id && m.away_team_id === teamB.id) ||
-        (m.home_team_id === teamB.id && m.away_team_id === teamA.id);
-      const fixture =
-        matches.find((m) => teamsMatch(m) && m.status !== "closed") ||
-        matches.find(teamsMatch);
+      let fixture = resolution.fixture;
+      if (!fixture && resolution.completedFixture) {
+        const completed = resolution.completedFixture;
+        const label = `${teamByIdSafe(teams, completed.home_team_id)} vs ${teamByIdSafe(teams, completed.away_team_id)}`;
+        if (window.confirm(`This match appears to be already completed.\n\n${label}\n${completed.round_label || `Round ${completed.round}`}\n\nDo you want to edit the completed match?`)) {
+          fixture = completed;
+          setEditingCompleted(true);
+        } else {
+          setError("This report was not imported. Completed fixtures are protected; use Edit completed match to change one.");
+          setParsing(false); return;
+        }
+      }
 
       if (!fixture) {
         setError(`No fixture found between "${teamA.name}" and "${teamB.name}". Create the fixture first.`);
@@ -121,10 +132,15 @@ export default function SmartResultParser({ open, onClose, tournament, teams, ma
           action: found ? "matched" : "unmatched",
         };
         if (!found) {
-          const suggestion = suggestClosest(p.name, players);
-          if (suggestion) {
-            participant.suggestion = suggestion.name;
-            participant.suggestionId = suggestion.id;
+          try {
+            const suggestion = suggestClosest(p.name, players);
+            if (suggestion) {
+              participant.suggestion = suggestion.name;
+              participant.suggestionId = suggestion.id;
+            }
+          } catch (matchingError) {
+            // A fuzzy-match problem must never remove a parsed participant.
+            console.error("[PlayerMatcher] suggestion failed", { player: p.name, error: matchingError });
           }
         }
         return participant;
@@ -132,12 +148,13 @@ export default function SmartResultParser({ open, onClose, tournament, teams, ma
       const aParts = (result.team_a_participants || []).map((p) => matchParticipant(p, aIsHome ? hp : ap, aIsHome ? "home" : "away"));
       const bParts = (result.team_b_participants || []).map((p) => matchParticipant(p, aIsHome ? ap : hp, aIsHome ? "away" : "home"));
       setParticipants([...aParts, ...bParts]);
+      console.debug("[Parser] Players detected:", aParts.length + bParts.length);
 
       if (result.motm) {
         const mp = [...hp, ...ap].find((p) => nameMatch(p.name, result.motm));
-        setMotm({ name: result.motm, playerId: mp?.id || "", action: mp ? "matched" : "unmatched" });
+        setMotm({ name: result.motm, playerId: mp?.id || "", action: mp ? "matched" : "unmatched", awardType: result.awardType, team: result.awardTeam });
       } else {
-        setMotm({ name: "", playerId: "", action: "none" });
+        setMotm({ name: "", playerId: "", action: "none", awardType: "", team: "" });
       }
     } catch (e) {
       setError(extractError(e));
@@ -174,6 +191,10 @@ export default function SmartResultParser({ open, onClose, tournament, teams, ma
     setSaving(true); setError("");
     try {
       const match = matches.find((m) => m.id === matchId);
+      if (isCompletedFixture(match) && !editingCompleted) {
+        setError("Completed fixtures are protected. Explicitly choose Edit completed match first.");
+        return;
+      }
       const playerMap = [...allPlayers];
 
       // Register new players
@@ -274,11 +295,14 @@ export default function SmartResultParser({ open, onClose, tournament, teams, ma
 
             {/* Match selector */}
             <div className="space-y-2">
-              <Label>Save to fixture</Label>
+              <Label>Detected match — confirm before saving</Label>
               <Select value={matchId} onValueChange={setMatchId}>
                 <SelectTrigger><SelectValue placeholder="Select a match" /></SelectTrigger>
                 <SelectContent>
-                  {sortedMatches.map((m) => (
+                  {sortedMatches.filter((m) =>
+                    ((m.home_team_id === homeTeamId && m.away_team_id === awayTeamId) || (m.home_team_id === awayTeamId && m.away_team_id === homeTeamId)) &&
+                    (!isCompletedFixture(m) || (editingCompleted && m.id === matchId))
+                  ).map((m) => (
                     <SelectItem key={m.id} value={m.id}>
                       {m.round_label || `Round ${m.round}`}: {teamById[m.home_team_id]?.name || "TBD"} vs {teamById[m.away_team_id]?.name || "TBD"}
                       {m.status === "closed" ? " ✓" : ""}
@@ -364,16 +388,19 @@ export default function SmartResultParser({ open, onClose, tournament, teams, ma
 
             {/* MOTM */}
             <div className="space-y-2">
-              <Label className="flex items-center gap-1"><Trophy className="w-3.5 h-3.5 text-amber-500" />Player of the match</Label>
+              <Label className="flex items-center gap-1"><Trophy className="w-3.5 h-3.5 text-amber-500" />{motm.awardType || "Player of the match"}</Label>
               {motm.action === "none" ? (
                 <p className="text-sm text-muted-foreground">Not detected in report.</p>
               ) : (
-                <Select value={motm.playerId} onValueChange={(v) => setMotm((prev) => ({ ...prev, playerId: v, action: "matched" }))}>
-                  <SelectTrigger className="h-9"><SelectValue placeholder={`Select player (detected: ${motm.name})`} /></SelectTrigger>
-                  <SelectContent>
-                    {allPlayers.map((p) => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}
-                  </SelectContent>
-                </Select>
+                <>
+                  <Select value={motm.playerId} onValueChange={(v) => setMotm((prev) => ({ ...prev, playerId: v, action: "matched" }))}>
+                    <SelectTrigger className="h-9"><SelectValue placeholder={`Select player (detected: ${motm.name})`} /></SelectTrigger>
+                    <SelectContent>
+                      {allPlayers.map((p) => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                  {motm.team && <p className="text-xs text-muted-foreground">{motm.team}</p>}
+                </>
               )}
             </div>
           </div>
