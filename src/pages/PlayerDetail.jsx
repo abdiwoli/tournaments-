@@ -4,12 +4,18 @@ import React, { useEffect, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 
 import TeamAvatar from "@/components/team/TeamAvatar";
-import { ArrowLeft, Target, Zap, Trophy, Activity } from "lucide-react";
-
+import { ArrowLeft, Target, Zap, Trophy, Activity, ArrowUpDown, Filter, Check, X, ChevronDown } from "lucide-react";
 
 export default function PlayerDetail() {
   const { id } = useParams();
   const [data, setData] = useState(null);
+
+  // State to track if match history should be sorted by goals
+  const [sortByGoals, setSortByGoals] = useState(false);
+
+  // States for managing selected rounds and popover visibility
+  const [selectedRounds, setSelectedRounds] = useState([]);
+  const [isFilterOpen, setIsFilterOpen] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -45,6 +51,7 @@ export default function PlayerDetail() {
   const totalYellow = myAppearances.reduce((s, a) => s + (a.yellow_cards || 0), 0) + validEvents.reduce((s, g) => s + (g.yellow_cards || 0), 0);
   const totalRed = myAppearances.reduce((s, a) => s + (a.red_cards || 0), 0) + validEvents.reduce((s, g) => s + (g.red_cards || 0), 0);
   const motmCount = finalizedMatches.filter((m) => m.motm_player_id === player.id).length;
+  
   // Matches played = closed matches with appearance + completed matches with goal event
   const playedMatchIds = new Set([...myAppearances.map((a) => a.match_id), ...validEvents.map((g) => g.match_id)]);
   const matchesPlayed = playedMatchIds.size;
@@ -66,15 +73,57 @@ export default function PlayerDetail() {
     s.red += g.red_cards || 0;
   });
 
-  const matchHistory = Object.entries(statsByMatchId)
+  // Base match history array
+  const rawMatchHistory = Object.entries(statsByMatchId)
     .map(([matchId, stats]) => {
       const m = matchById[matchId];
       if (!m) return null;
       const motm = m.motm_player_id === player.id;
       return { match: m, ...stats, motm };
     })
-    .filter(Boolean)
-    .sort((a, b) => (b.match.round || 0) - (a.match.round || 0));
+    .filter(Boolean);
+
+  // Extract all unique available rounds played by the player
+  const availableRounds = Array.from(
+    new Set(rawMatchHistory.map((item) => String(item.match.round_label || `Round ${item.match.round}`)))
+  ).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+
+  // Helper functions for round selection management
+  const toggleRoundSelection = (roundName) => {
+    setSelectedRounds((prev) =>
+      prev.includes(roundName)
+        ? prev.filter((r) => r !== roundName)
+        : [...prev, roundName]
+    );
+  };
+
+  const removeSingleRound = (roundName) => {
+    setSelectedRounds((prev) => prev.filter((r) => r !== roundName));
+  };
+
+  const selectAllRounds = () => setSelectedRounds([...availableRounds]);
+  const clearAllRounds = () => setSelectedRounds([]);
+
+  // Filter match history based on selected rounds (if none selected -> show all)
+  const filteredMatchHistory = selectedRounds.length > 0
+    ? rawMatchHistory.filter((item) => {
+        const roundLabel = String(item.match.round_label || `Round ${item.match.round}`);
+        return selectedRounds.includes(roundLabel);
+      })
+    : rawMatchHistory;
+
+  // Calculate total goals scored ONLY in the selected rounds
+  const sumGoalsInSelectedRounds = filteredMatchHistory.reduce((sum, item) => sum + item.goals, 0);
+
+  // Sort match history (by goals descending or round descending)
+  const matchHistory = [...filteredMatchHistory].sort((a, b) => {
+    if (sortByGoals) {
+      if (b.goals !== a.goals) {
+        return b.goals - a.goals;
+      }
+    }
+    return (b.match.round || 0) - (a.match.round || 0);
+  });
 
   const formatDate = (dateStr) => {
     if (!dateStr) return "";
@@ -92,7 +141,7 @@ export default function PlayerDetail() {
   );
 
   return (
-    <div>
+    <div className="relative">
       <Link
         to={tournament ? `/tournament/${tournament.id}/stats` : "/"}
         className="mb-4 inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
@@ -125,10 +174,148 @@ export default function PlayerDetail() {
         <StatCard icon={<Activity className="w-4 h-4 text-muted-foreground" />} label="Played" value={matchesPlayed} />
       </div>
 
+      {/* Round Filter Bar */}
+      <div className="mb-6 rounded-2xl border border-border/60 bg-card/60 p-4 backdrop-blur-xl">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          
+          <button
+            onClick={() => setIsFilterOpen((prev) => !prev)}
+            className="inline-flex items-center gap-2 rounded-xl bg-foreground text-background px-3.5 py-2 text-xs font-semibold shadow-sm hover:opacity-90 transition-all"
+          >
+            <Filter className="w-3.5 h-3.5" />
+            <span>Select Rounds</span>
+            {selectedRounds.length > 0 && (
+              <span className="ml-1 rounded-full bg-green-500 text-white px-2 py-0.5 text-[10px] font-bold">
+                {selectedRounds.length}
+              </span>
+            )}
+            <ChevronDown className={`w-3.5 h-3.5 transition-transform duration-200 ${isFilterOpen ? "rotate-180" : ""}`} />
+          </button>
+
+          <div className="flex items-center gap-2 text-sm">
+            <span className="text-muted-foreground text-xs">
+              {selectedRounds.length > 0 ? "Sum for selected:" : "Total overall:"}
+            </span>
+            <span className="text-base font-bold text-green-600 dark:text-green-400">
+              {sumGoalsInSelectedRounds} Goal{sumGoalsInSelectedRounds === 1 ? "" : "s"}
+            </span>
+          </div>
+        </div>
+
+        {selectedRounds.length > 0 ? (
+          <div className="mt-3 pt-3 border-t border-border/40 flex flex-wrap items-center gap-1.5">
+            <span className="text-xs text-muted-foreground mr-1">Active rounds:</span>
+            {selectedRounds.map((rnd) => (
+              <span
+                key={rnd}
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium bg-green-500/10 border border-green-500/30 text-green-600 dark:text-green-400"
+              >
+                {rnd}
+                <button
+                  onClick={() => removeSingleRound(rnd)}
+                  className="hover:bg-green-500/20 rounded p-0.5 transition-colors"
+                  title="Remove round"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              </span>
+            ))}
+            <button
+              onClick={clearAllRounds}
+              className="ml-auto text-xs text-muted-foreground hover:text-foreground underline"
+            >
+              Clear filter
+            </button>
+          </div>
+        ) : (
+          <p className="mt-2 text-xs text-muted-foreground">
+            Click "Select Rounds" above to filter statistics for specific matchday rounds.
+          </p>
+        )}
+      </div>
+
+      {/* Round Selector Modal Overlay */}
+      {isFilterOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm animate-in fade-in duration-150">
+          <div className="w-full max-w-sm rounded-2xl border border-border bg-background p-5 shadow-2xl space-y-4">
+            
+            <div className="flex items-center justify-between border-b border-border/60 pb-3">
+              <div className="flex items-center gap-2">
+                <Filter className="w-4 h-4 text-green-500" />
+                <h3 className="font-semibold text-sm">Choose Rounds to Calculate</h3>
+              </div>
+              <button
+                onClick={() => setIsFilterOpen(false)}
+                className="rounded-lg p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="flex items-center justify-between text-xs text-muted-foreground">
+              <span>{selectedRounds.length} of {availableRounds.length} selected</span>
+              <div className="space-x-3">
+                <button onClick={selectAllRounds} className="hover:text-foreground underline font-medium">
+                  Select All
+                </button>
+                <button onClick={clearAllRounds} className="hover:text-foreground underline font-medium">
+                  Clear
+                </button>
+              </div>
+            </div>
+
+            <div className="max-h-60 overflow-y-auto space-y-1.5 pr-1">
+              {availableRounds.map((rnd) => {
+                const isSelected = selectedRounds.includes(rnd);
+                return (
+                  <button
+                    key={rnd}
+                    onClick={() => toggleRoundSelection(rnd)}
+                    className={`w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs font-medium transition-all ${
+                      isSelected
+                        ? "bg-green-600 text-white font-semibold shadow-sm"
+                        : "bg-muted/50 hover:bg-muted text-foreground"
+                    }`}
+                  >
+                    <span>{rnd}</span>
+                    {isSelected && <Check className="w-3.5 h-3.5" />}
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="pt-2 border-t border-border/60">
+              <button
+                onClick={() => setIsFilterOpen(false)}
+                className="w-full py-2 rounded-xl bg-foreground text-background text-xs font-semibold hover:opacity-90 transition-opacity"
+              >
+                Apply Filter ({selectedRounds.length > 0 ? `${selectedRounds.length} Rounds` : "Show All"})
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div>
-        <h2 className="mb-3 text-sm font-medium uppercase tracking-wide text-muted-foreground">Match history</h2>
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="text-sm font-medium uppercase tracking-wide text-muted-foreground">
+            Match history {selectedRounds.length > 0 ? `(${selectedRounds.length} selected)` : ""}
+          </h2>
+          <button
+            onClick={() => setSortByGoals((prev) => !prev)}
+            className={`flex items-center gap-1.5 rounded-lg border px-3 py-1 text-xs font-medium transition-all ${
+              sortByGoals
+                ? "border-green-500/50 bg-green-500/10 text-green-600 dark:text-green-400"
+                : "border-border/60 bg-card/60 text-muted-foreground hover:bg-accent hover:text-foreground"
+            }`}
+          >
+            <ArrowUpDown className="h-3 w-3" />
+            {sortByGoals ? "Sorted by Goals" : "Sort by Goals"}
+          </button>
+        </div>
+
         {matchHistory.length === 0 ? (
-          <p className="py-8 text-center text-sm text-muted-foreground">No match events recorded yet.</p>
+          <p className="py-8 text-center text-sm text-muted-foreground">No matches found for the selected rounds.</p>
         ) : (
           <div className="space-y-3">
             {matchHistory.map(({ match: m, goals: g, assists: a, yellow, red, motm }) => {
