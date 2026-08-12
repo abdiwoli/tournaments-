@@ -1,7 +1,24 @@
 import React, { useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import {
+  View,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  FlatList,
+  Modal,
+  ScrollView,
+  StyleSheet,
+  SafeAreaView,
+} from "react-native";
+import {
+  ChevronUp,
+  ChevronDown,
+  Search,
+  Trophy,
+  X,
+  Filter,
+} from "lucide-react-native";
 import TeamAvatar from "@/components/team/TeamAvatar";
-import { ChevronUp, ChevronDown, Search, Trophy, X, Filter } from "lucide-react";
 
 const TIE_BREAKERS = {
   goals: ["computedGoals", "computedAssists", "computedMotm"],
@@ -27,10 +44,13 @@ export default function PlayerRankingsTable({
   matches = [],
   goals = [],
   appearances = [],
+  onPlayerPress, // Navigation callback e.g. (playerId) => navigation.navigate('PlayerDetail', { id: playerId })
 }) {
   const [selectedRounds, setSelectedRounds] = useState([]); // Empty = All Rounds
-  const [isRoundOverlayOpen, setIsRoundOverlayOpen] = useState(false);
-  const [selectedTeamId, setSelectedTeamId] = useState("all"); // Team Filter State
+  const [isRoundModalOpen, setIsRoundModalOpen] = useState(false);
+  const [isTeamModalOpen, setIsTeamModalOpen] = useState(false);
+  const [isSortModalOpen, setIsSortModalOpen] = useState(false);
+  const [selectedTeamId, setSelectedTeamId] = useState("all");
   const [sortKey, setSortKey] = useState("goals");
   const [sortDir, setSortDir] = useState("desc");
   const [query, setQuery] = useState("");
@@ -89,7 +109,7 @@ export default function PlayerRankingsTable({
     );
   };
 
-  const handleSelectAll = () => {
+  const handleSelectAllRounds = () => {
     if (selectedRounds.length === availableRounds.length) {
       setSelectedRounds([]);
     } else {
@@ -190,14 +210,12 @@ export default function PlayerRankingsTable({
   const filtered = useMemo(() => {
     let result = rows;
 
-    // Filter by team
     if (selectedTeamId && selectedTeamId !== "all") {
       result = result.filter(
         (p) => String(p.team_id) === String(selectedTeamId)
       );
     }
 
-    // Filter by search query
     const q = query.trim().toLowerCase();
     if (q) {
       result = result.filter(
@@ -225,374 +243,545 @@ export default function PlayerRankingsTable({
     });
   }, [filtered, sortKey, sortDir]);
 
-  const toggleSort = (key) => {
-    if (sortKey === key) setSortDir((d) => (d === "desc" ? "asc" : "desc"));
-    else {
-      setSortKey(key);
-      setSortDir("desc");
-    }
-  };
-
-  const SortIcon = ({ col }) => {
-    if (sortKey !== col)
-      return <ChevronUp className="ml-1 inline w-3 h-3 opacity-30" />;
-    return sortDir === "desc" ? (
-      <ChevronDown className="ml-1 inline w-3 h-3" />
-    ) : (
-      <ChevronUp className="ml-1 inline w-3 h-3" />
-    );
-  };
-
   const allRoundsSelected =
     availableRounds.length > 0 &&
     (selectedRounds.length === 0 ||
       selectedRounds.length === availableRounds.length);
 
+  const selectedTeamName =
+    selectedTeamId === "all"
+      ? "All Teams"
+      : availableTeams.find((t) => String(t.id) === String(selectedTeamId))?.name ||
+        "All Teams";
+
+  const selectedSortOption = SORT_OPTIONS.find((s) => s.key === sortKey);
+
+  const renderPlayerCard = ({ item: p, index: i }) => (
+    <TouchableOpacity
+      activeOpacity={0.7}
+      onPress={() => onPlayerPress && onPlayerPress(p.id)}
+      style={styles.card}
+    >
+      <View style={styles.cardHeader}>
+        <Text style={styles.rankText}>{i + 1}</Text>
+        {p.team && <TeamAvatar team={p.team} size={32} />}
+        <View style={styles.playerInfo}>
+          <Text style={styles.playerName} numberOfLines={1}>
+            {p.name}
+          </Text>
+          <Text style={styles.teamName} numberOfLines={1}>
+            {p.team?.name || "—"} {p.position ? `• ${p.position}` : ""}
+          </Text>
+        </View>
+      </View>
+
+      <View style={styles.statsGrid}>
+        <View style={styles.statCol}>
+          <Text style={styles.statLabel}>G</Text>
+          <Text style={[styles.statValue, styles.textGreen]}>
+            {p.computedGoals}
+          </Text>
+        </View>
+        <View style={styles.statCol}>
+          <Text style={styles.statLabel}>A</Text>
+          <Text style={[styles.statValue, styles.textBlue]}>
+            {p.computedAssists}
+          </Text>
+        </View>
+        <View style={styles.statCol}>
+          <Text style={styles.statLabel}>MOTM</Text>
+          <Text style={[styles.statValue, styles.textAmber]}>
+            {p.computedMotm}
+          </Text>
+        </View>
+        <View style={styles.statCol}>
+          <Text style={styles.statLabel}>Y</Text>
+          <Text style={[styles.statValue, styles.textYellow]}>
+            {p.yellowCards}
+          </Text>
+        </View>
+        <View style={styles.statCol}>
+          <Text style={styles.statLabel}>R</Text>
+          <Text style={[styles.statValue, styles.textRed]}>
+            {p.redCards}
+          </Text>
+        </View>
+        <View style={styles.statCol}>
+          <Text style={styles.statLabel}>MP</Text>
+          <Text style={[styles.statValue, styles.textMuted]}>
+            {p.matchesPlayed}
+          </Text>
+        </View>
+      </View>
+    </TouchableOpacity>
+  );
+
   return (
-    <div>
+    <SafeAreaView style={styles.container}>
       {/* Controls Header */}
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        {/* Left Side Controls: Round Filter & Team Filter */}
-        <div className="flex flex-wrap items-center gap-2">
-          {/* Round Selection Overlay Button */}
-          <div className="relative">
-            <button
-              onClick={() => setIsRoundOverlayOpen((prev) => !prev)}
-              className="flex items-center gap-1.5 rounded-full border border-border/60 bg-card px-3.5 py-1.5 text-sm font-medium transition-colors hover:border-foreground/40"
-            >
-              <Filter className="w-3.5 h-3.5 text-muted-foreground" />
-              <span>
-                {allRoundsSelected
-                  ? "All Rounds"
-                  : selectedRounds.length === 1
-                  ? `Round ${selectedRounds[0]}`
-                  : `${selectedRounds.length} Rounds Selected`}
-              </span>
-              <ChevronDown className="w-3.5 h-3.5 text-muted-foreground" />
-            </button>
-
-            {/* Overlay Popover */}
-            {isRoundOverlayOpen && (
-              <>
-                <div
-                  className="fixed inset-0 z-30 bg-black/20 backdrop-blur-[1px]"
-                  onClick={() => setIsRoundOverlayOpen(false)}
-                />
-
-                <div className="absolute left-0 top-full z-40 mt-2 w-72 rounded-2xl border border-border/80 bg-card/95 p-3 shadow-2xl backdrop-blur-xl">
-                  <div className="mb-2 flex items-center justify-between border-b border-border/40 pb-2">
-                    <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                      Filter Rounds
-                    </span>
-                    <div className="flex items-center gap-2">
-                      <button
-                        onClick={handleSelectAll}
-                        className="text-xs font-medium text-primary hover:underline"
-                      >
-                        {selectedRounds.length === availableRounds.length
-                          ? "Deselect All"
-                          : "Select All"}
-                      </button>
-                      {selectedRounds.length > 0 && (
-                        <button
-                          onClick={() => setSelectedRounds([])}
-                          className="text-xs text-muted-foreground hover:text-foreground underline"
-                        >
-                          Reset
-                        </button>
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-4 gap-1.5 max-h-48 overflow-y-auto pr-1">
-                    {/* Quick "All" pill button */}
-                    <button
-                      onClick={() => setSelectedRounds([])}
-                      className={`rounded-xl py-1.5 text-xs font-medium transition-all ${
-                        selectedRounds.length === 0
-                          ? "bg-primary text-primary-foreground shadow-sm"
-                          : "bg-muted/40 hover:bg-muted text-muted-foreground"
-                      }`}
-                    >
-                      All
-                    </button>
-
-                    {availableRounds.map((r) => {
-                      const isSelected = selectedRounds.includes(r);
-                      return (
-                        <button
-                          key={r}
-                          onClick={() => toggleRound(r)}
-                          className={`rounded-xl py-1.5 text-xs font-medium transition-all ${
-                            isSelected
-                              ? "bg-primary text-primary-foreground shadow-sm"
-                              : "bg-muted/40 hover:bg-muted text-muted-foreground"
-                          }`}
-                        >
-                          R{r}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              </>
-            )}
-          </div>
-
-          {/* Team Filter Dropdown */}
-          <div className="flex items-center gap-2">
-            <span className="text-xs text-muted-foreground hidden sm:inline">Team</span>
-            <select
-              value={selectedTeamId}
-              onChange={(e) => setSelectedTeamId(e.target.value)}
-              className="rounded-full border border-border/60 bg-card px-3 py-1.5 text-sm font-medium outline-none transition-colors focus:border-foreground"
-            >
-              <option value="all">All Teams</option>
-              {availableTeams.map((t) => (
-                <option key={t.id} value={t.id}>
-                  {t.name}
-                </option>
-              ))}
-            </select>
-          </div>
-        </div>
-
-        {/* Sort Selector */}
-        <div className="flex items-center gap-2">
-          <span className="text-xs text-muted-foreground">Sort by</span>
-          <select
-            value={sortKey}
-            onChange={(e) => {
-              setSortKey(e.target.value);
-              setSortDir("desc");
-            }}
-            className="rounded-full border border-border/60 bg-card px-3 py-1.5 text-sm outline-none focus:border-foreground"
+      <View style={styles.controlsRow}>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+          {/* Round Selection Modal Trigger */}
+          <TouchableOpacity
+            style={styles.pillButton}
+            onPress={() => setIsRoundModalOpen(true)}
           >
-            {SORT_OPTIONS.map((o) => (
-              <option key={o.key} value={o.key}>
-                {o.label}
-              </option>
-            ))}
-          </select>
-          <button
-            onClick={() => setSortDir((d) => (d === "desc" ? "asc" : "desc"))}
-            className="grid h-8 w-8 place-items-center rounded-full border border-border/60 text-muted-foreground hover:text-foreground"
-            title={sortDir === "desc" ? "Descending" : "Ascending"}
+            <Filter size={14} color="#6B7280" />
+            <Text style={styles.pillText}>
+              {allRoundsSelected
+                ? "All Rounds"
+                : selectedRounds.length === 1
+                ? `Round ${selectedRounds[0]}`
+                : `${selectedRounds.length} Rounds`}
+            </Text>
+            <ChevronDown size={14} color="#6B7280" />
+          </TouchableOpacity>
+
+          {/* Team Filter Modal Trigger */}
+          <TouchableOpacity
+            style={styles.pillButton}
+            onPress={() => setIsTeamModalOpen(true)}
+          >
+            <Text style={styles.pillText}>{selectedTeamName}</Text>
+            <ChevronDown size={14} color="#6B7280" />
+          </TouchableOpacity>
+
+          {/* Sort Selector Modal Trigger */}
+          <TouchableOpacity
+            style={styles.pillButton}
+            onPress={() => setIsSortModalOpen(true)}
+          >
+            <Text style={styles.pillText}>Sort: {selectedSortOption?.label}</Text>
+            <ChevronDown size={14} color="#6B7280" />
+          </TouchableOpacity>
+
+          {/* Toggle Direction Button */}
+          <TouchableOpacity
+            style={styles.iconCircleButton}
+            onPress={() => setSortDir((d) => (d === "desc" ? "asc" : "desc"))}
           >
             {sortDir === "desc" ? (
-              <ChevronDown className="w-4 h-4" />
+              <ChevronDown size={16} color="#374151" />
             ) : (
-              <ChevronUp className="w-4 h-4" />
+              <ChevronUp size={16} color="#374151" />
             )}
-          </button>
-        </div>
-      </div>
+          </TouchableOpacity>
+        </ScrollView>
+      </View>
 
       {/* Search Input */}
-      <div className="relative mb-3">
-        <Search className="pointer-events-none absolute left-3 top-1/2 w-4 h-4 -translate-y-1/2 text-muted-foreground" />
-        <input
-          type="text"
+      <View style={styles.searchContainer}>
+        <Search size={16} color="#9CA3AF" style={styles.searchIcon} />
+        <TextInput
           value={query}
-          onChange={(e) => setQuery(e.target.value)}
+          onChangeText={setQuery}
           placeholder="Search players or teams..."
-          className="w-full rounded-full border border-border/60 bg-card py-2 pl-9 pr-9 text-sm outline-none focus:border-foreground"
+          placeholderTextColor="#9CA3AF"
+          style={styles.searchInput}
         />
-        {query && (
-          <button
-            onClick={() => setQuery("")}
-            className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-            title="Clear"
-          >
-            <X className="w-4 h-4" />
-          </button>
+        {query.length > 0 && (
+          <TouchableOpacity onPress={() => setQuery("")} style={styles.clearIcon}>
+            <X size={16} color="#9CA3AF" />
+          </TouchableOpacity>
         )}
-      </div>
+      </View>
 
-      {/* Desktop Table */}
-      <div className="hidden overflow-hidden rounded-3xl border border-border/60 bg-card/60 backdrop-blur-xl sm:block">
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-border/60 text-xs uppercase tracking-wide text-muted-foreground">
-                <th className="py-3 pl-5 pr-2 text-left font-medium">Rank</th>
-                <th className="py-3 pr-2 text-left font-medium">Player</th>
-                <th className="py-3 px-2 text-left font-medium">Team</th>
-                <th
-                  className="cursor-pointer py-3 px-2 text-center font-medium hover:text-foreground"
-                  onClick={() => toggleSort("goals")}
-                >
-                  Goals<SortIcon col="goals" />
-                </th>
-                <th
-                  className="cursor-pointer py-3 px-2 text-center font-medium hover:text-foreground"
-                  onClick={() => toggleSort("assists")}
-                >
-                  Assists<SortIcon col="assists" />
-                </th>
-                <th
-                  className="cursor-pointer py-3 px-2 text-center font-medium hover:text-foreground"
-                  onClick={() => toggleSort("motm")}
-                >
-                  <Trophy className="mr-0.5 inline w-3 h-3" />
-                  MOTM<SortIcon col="motm" />
-                </th>
-                <th
-                  className="cursor-pointer py-3 px-2 text-center font-medium hover:text-foreground"
-                  onClick={() => toggleSort("yc")}
-                >
-                  <span className="inline-block w-2.5 h-2.5 rounded-sm bg-yellow-400 align-middle" />
-                  <SortIcon col="yc" />
-                </th>
-                <th
-                  className="cursor-pointer py-3 px-2 text-center font-medium hover:text-foreground"
-                  onClick={() => toggleSort("rc")}
-                >
-                  <span className="inline-block w-2.5 h-2.5 rounded-sm bg-red-500 align-middle" />
-                  <SortIcon col="rc" />
-                </th>
-                <th
-                  className="cursor-pointer py-3 px-2 pr-5 text-center font-medium hover:text-foreground"
-                  onClick={() => toggleSort("matches")}
-                >
-                  Matches<SortIcon col="matches" />
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {sorted.length === 0 ? (
-                <tr>
-                  <td colSpan={9} className="py-10 text-center text-muted-foreground">
-                    {query
-                      ? "No players match your search."
-                      : selectedTeamId !== "all"
-                      ? "No players found for the selected team."
-                      : selectedRounds.length > 0
-                      ? `No stats recorded for Round(s) ${selectedRounds.join(", ")}.`
-                      : "No players yet."}
-                  </td>
-                </tr>
-              ) : (
-                sorted.map((p, i) => (
-                  <tr key={p.id} className="border-b border-border/40 last:border-0">
-                    <td className="py-3 pl-5 pr-2 text-muted-foreground">{i + 1}</td>
-                    <td className="py-3 pr-2">
-                      <Link to={`/player/${p.id}`} className="font-medium hover:underline">
-                        {p.name}
-                      </Link>
-                      {p.position && (
-                        <div className="text-xs text-muted-foreground">{p.position}</div>
-                      )}
-                    </td>
-                    <td className="py-3 px-2">
-                      <div className="flex items-center gap-2">
-                        {p.team && <TeamAvatar team={p.team} size={24} />}
-                        <span className="truncate text-xs text-muted-foreground">
-                          {p.team?.name || "—"}
-                        </span>
-                      </div>
-                    </td>
-                    <td className="py-3 px-2 text-center font-semibold tabular-nums">
-                      {p.computedGoals}
-                    </td>
-                    <td className="py-3 px-2 text-center font-semibold tabular-nums">
-                      {p.computedAssists}
-                    </td>
-                    <td className="py-3 px-2 text-center font-semibold tabular-nums text-amber-600">
-                      {p.computedMotm}
-                    </td>
-                    <td className="py-3 px-2 text-center tabular-nums text-yellow-600">
-                      {p.yellowCards}
-                    </td>
-                    <td className="py-3 px-2 text-center tabular-nums text-red-600">
-                      {p.redCards}
-                    </td>
-                    <td className="py-3 px-2 pr-5 text-center tabular-nums text-muted-foreground">
-                      {p.matchesPlayed}
-                    </td>
-                  </tr>
-                ))
+      {/* Main List */}
+      <FlatList
+        data={sorted}
+        keyExtractor={(item) => String(item.id)}
+        renderItem={renderPlayerCard}
+        contentContainerStyle={styles.listContainer}
+        ListEmptyComponent={
+          <View style={styles.emptyContainer}>
+            <Text style={styles.emptyText}>
+              {query
+                ? "No players match your search."
+                : selectedTeamId !== "all"
+                ? "No players found for the selected team."
+                : selectedRounds.length > 0
+                ? `No stats recorded for Round(s) ${selectedRounds.join(", ")}.`
+                : "No players yet."}
+            </Text>
+          </View>
+        }
+      />
+
+      {/* Modal: Filter Rounds */}
+      <Modal visible={isRoundModalOpen} transparent animationType="slide">
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Filter Rounds</Text>
+              <TouchableOpacity onPress={() => setIsRoundModalOpen(false)}>
+                <X size={20} color="#374151" />
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.modalActions}>
+              <TouchableOpacity onPress={handleSelectAllRounds}>
+                <Text style={styles.actionText}>
+                  {selectedRounds.length === availableRounds.length
+                    ? "Deselect All"
+                    : "Select All"}
+                </Text>
+              </TouchableOpacity>
+              {selectedRounds.length > 0 && (
+                <TouchableOpacity onPress={() => setSelectedRounds([])}>
+                  <Text style={styles.actionTextMuted}>Reset</Text>
+                </TouchableOpacity>
               )}
-            </tbody>
-          </table>
-        </div>
-      </div>
+            </View>
 
-      {/* Mobile Cards */}
-      <div className="space-y-2 sm:hidden">
-        {sorted.length === 0 ? (
-          <p className="py-10 text-center text-sm text-muted-foreground">
-            {query
-              ? "No players match your search."
-              : selectedTeamId !== "all"
-              ? "No players found for the selected team."
-              : selectedRounds.length > 0
-              ? `No stats recorded for Round(s) ${selectedRounds.join(", ")}.`
-              : "No players yet."}
-          </p>
-        ) : (
-          sorted.map((p, i) => (
-            <div
-              key={p.id}
-              className="rounded-2xl border border-border/60 bg-card/60 p-3 backdrop-blur-xl"
-            >
-              <div className="flex items-center gap-3">
-                <span className="text-sm text-muted-foreground">{i + 1}</span>
-                {p.team && <TeamAvatar team={p.team} size={32} />}
-                <div className="min-w-0 flex-1">
-                  <Link
-                    to={`/player/${p.id}`}
-                    className="block truncate font-medium hover:underline"
+            <ScrollView style={styles.roundGrid}>
+              <View style={styles.roundGridContainer}>
+                <TouchableOpacity
+                  style={[
+                    styles.roundPill,
+                    selectedRounds.length === 0 && styles.roundPillActive,
+                  ]}
+                  onPress={() => setSelectedRounds([])}
+                >
+                  <Text
+                    style={[
+                      styles.roundPillText,
+                      selectedRounds.length === 0 && styles.roundPillTextActive,
+                    ]}
                   >
-                    {p.name}
-                  </Link>
-                  <span className="truncate text-xs text-muted-foreground">
-                    {p.team?.name || "—"}
-                  </span>
-                </div>
-              </div>
-              <div className="mt-3 grid grid-cols-6 gap-1 text-center">
-                <div>
-                  <div className="text-xs text-muted-foreground">G</div>
-                  <div className="font-semibold tabular-nums text-green-600">
-                    {p.computedGoals}
-                  </div>
-                </div>
-                <div>
-                  <div className="text-xs text-muted-foreground">A</div>
-                  <div className="font-semibold tabular-nums text-blue-600">
-                    {p.computedAssists}
-                  </div>
-                </div>
-                <div>
-                  <div className="text-xs text-muted-foreground">MOTM</div>
-                  <div className="font-semibold tabular-nums text-amber-600">
-                    {p.computedMotm}
-                  </div>
-                </div>
-                <div>
-                  <div className="text-xs text-muted-foreground">Y</div>
-                  <div className="font-semibold tabular-nums text-yellow-600">
-                    {p.yellowCards}
-                  </div>
-                </div>
-                <div>
-                  <div className="text-xs text-muted-foreground">R</div>
-                  <div className="font-semibold tabular-nums text-red-600">
-                    {p.redCards}
-                  </div>
-                </div>
-                <div>
-                  <div className="text-xs text-muted-foreground">MP</div>
-                  <div className="font-semibold tabular-nums text-muted-foreground">
-                    {p.matchesPlayed}
-                  </div>
-                </div>
-              </div>
-            </div>
-          ))
-        )}
-      </div>
-    </div>
+                    All
+                  </Text>
+                </TouchableOpacity>
+
+                {availableRounds.map((r) => {
+                  const isSelected = selectedRounds.includes(r);
+                  return (
+                    <TouchableOpacity
+                      key={r}
+                      style={[
+                        styles.roundPill,
+                        isSelected && styles.roundPillActive,
+                      ]}
+                      onPress={() => toggleRound(r)}
+                    >
+                      <Text
+                        style={[
+                          styles.roundPillText,
+                          isSelected && styles.roundPillTextActive,
+                        ]}
+                      >
+                        R{r}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Modal: Team Filter */}
+      <Modal visible={isTeamModalOpen} transparent animationType="slide">
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Select Team</Text>
+              <TouchableOpacity onPress={() => setIsTeamModalOpen(false)}>
+                <X size={20} color="#374151" />
+              </TouchableOpacity>
+            </View>
+            <ScrollView>
+              <TouchableOpacity
+                style={styles.optionRow}
+                onPress={() => {
+                  setSelectedTeamId("all");
+                  setIsTeamModalOpen(false);
+                }}
+              >
+                <Text
+                  style={[
+                    styles.optionText,
+                    selectedTeamId === "all" && styles.optionTextActive,
+                  ]}
+                >
+                  All Teams
+                </Text>
+              </TouchableOpacity>
+              {availableTeams.map((t) => (
+                <TouchableOpacity
+                  key={t.id}
+                  style={styles.optionRow}
+                  onPress={() => {
+                    setSelectedTeamId(String(t.id));
+                    setIsTeamModalOpen(false);
+                  }}
+                >
+                  <Text
+                    style={[
+                      styles.optionText,
+                      String(selectedTeamId) === String(t.id) &&
+                        styles.optionTextActive,
+                    ]}
+                  >
+                    {t.name}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Modal: Sort Key */}
+      <Modal visible={isSortModalOpen} transparent animationType="slide">
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Sort By</Text>
+              <TouchableOpacity onPress={() => setIsSortModalOpen(false)}>
+                <X size={20} color="#374151" />
+              </TouchableOpacity>
+            </View>
+            <ScrollView>
+              {SORT_OPTIONS.map((o) => (
+                <TouchableOpacity
+                  key={o.key}
+                  style={styles.optionRow}
+                  onPress={() => {
+                    setSortKey(o.key);
+                    setSortDir("desc");
+                    setIsSortModalOpen(false);
+                  }}
+                >
+                  <Text
+                    style={[
+                      styles.optionText,
+                      sortKey === o.key && styles.optionTextActive,
+                    ]}
+                  >
+                    {o.label}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+    </SafeAreaView>
   );
 }
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: "#F9FAFB",
+  },
+  controlsRow: {
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+  },
+  pillButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#FFFFFF",
+    borderColor: "#E5E7EB",
+    borderWidth: 1,
+    borderRadius: 20,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    marginRight: 8,
+    gap: 6,
+  },
+  pillText: {
+    fontSize: 13,
+    fontWeight: "500",
+    color: "#374151",
+  },
+  iconCircleButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: "#FFFFFF",
+    borderColor: "#E5E7EB",
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  searchContainer: {
+    position: "relative",
+    marginHorizontal: 16,
+    marginBottom: 10,
+    justifyContent: "center",
+  },
+  searchIcon: {
+    position: "absolute",
+    left: 12,
+    zIndex: 1,
+  },
+  clearIcon: {
+    position: "absolute",
+    right: 12,
+    zIndex: 1,
+  },
+  searchInput: {
+    backgroundColor: "#FFFFFF",
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    borderRadius: 20,
+    paddingVertical: 8,
+    paddingLeft: 36,
+    paddingRight: 36,
+    fontSize: 14,
+    color: "#111827",
+  },
+  listContainer: {
+    paddingHorizontal: 16,
+    paddingBottom: 20,
+  },
+  card: {
+    backgroundColor: "#FFFFFF",
+    borderColor: "#E5E7EB",
+    borderWidth: 1,
+    borderRadius: 16,
+    padding: 12,
+    marginBottom: 8,
+  },
+  cardHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  rankText: {
+    fontSize: 13,
+    fontWeight: "500",
+    color: "#6B7280",
+    width: 16,
+  },
+  playerInfo: {
+    flex: 1,
+  },
+  playerName: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#111827",
+  },
+  teamName: {
+    fontSize: 12,
+    color: "#6B7280",
+    marginTop: 2,
+  },
+  statsGrid: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    marginTop: 12,
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: "#F3F4F6",
+  },
+  statCol: {
+    alignItems: "center",
+    flex: 1,
+  },
+  statLabel: {
+    fontSize: 11,
+    color: "#9CA3AF",
+    marginBottom: 2,
+  },
+  statValue: {
+    fontSize: 13,
+    fontWeight: "600",
+  },
+  textGreen: { color: "#16A34A" },
+  textBlue: { color: "#2563EB" },
+  textAmber: { color: "#D97706" },
+  textYellow: { color: "#CA8A04" },
+  textRed: { color: "#DC2626" },
+  textMuted: { color: "#6B7280" },
+
+  emptyContainer: {
+    paddingVertical: 40,
+    alignItems: "center",
+  },
+  emptyText: {
+    fontSize: 14,
+    color: "#6B7280",
+    textAlign: "center",
+  },
+
+  /* Modals */
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.4)",
+    justifyContent: "flex-end",
+  },
+  modalContent: {
+    backgroundColor: "#FFFFFF",
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    padding: 20,
+    maxHeight: "60%",
+  },
+  modalHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 16,
+  },
+  modalTitle: {
+    fontSize: 16,
+    fontWeight: "600",
+    color: "#111827",
+  },
+  modalActions: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    marginBottom: 12,
+  },
+  actionText: {
+    fontSize: 13,
+    color: "#2563EB",
+    fontWeight: "500",
+  },
+  actionTextMuted: {
+    fontSize: 13,
+    color: "#6B7280",
+  },
+  roundGrid: {
+    maxHeight: 200,
+  },
+  roundGridContainer: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  roundPill: {
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 12,
+    backgroundColor: "#F3F4F6",
+  },
+  roundPillActive: {
+    backgroundColor: "#2563EB",
+  },
+  roundPillText: {
+    fontSize: 13,
+    color: "#374151",
+    fontWeight: "500",
+  },
+  roundPillTextActive: {
+    color: "#FFFFFF",
+  },
+  optionRow: {
+    paddingVertical: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: "#F3F4F6",
+  },
+  optionText: {
+    fontSize: 15,
+    color: "#374151",
+  },
+  optionTextActive: {
+    fontWeight: "600",
+    color: "#2563EB",
+  },
+});
