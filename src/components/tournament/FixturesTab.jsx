@@ -5,7 +5,6 @@ import React, { useMemo, useState } from "react";
 import { useToast } from "@/components/ui/use-toast";
 import { Button } from "@/components/ui/button";
 import { Shuffle, Trash2, Plus, Pencil, Zap, ClipboardPaste, RotateCcw } from "lucide-react";
-import { generateFixtures } from "@/lib/fixtures";
 import MatchRow from "@/components/tournament/MatchRow";
 import FixtureForm from "@/components/tournament/FixtureForm";
 import SmartResultParser from "@/components/tournament/SmartResultParser";
@@ -23,26 +22,20 @@ export default function FixturesTab({ tournament, teams, matches, perms, reload 
   const teamsById = useMemo(() => Object.fromEntries(teams.map((t) => [t.id, t])), [teams]);
 
   const generate = async (maxRound) => {
+    if (maxRound) {
+      toast({ title: "Full schedule required", description: "The shared competition API generates an entire stage at once.", variant: "destructive" });
+      return;
+    }
+    if (matches.length) {
+      toast({ title: "Clear fixtures first", description: "Existing fixtures are preserved. Use Clear all before generating a replacement schedule.", variant: "destructive" });
+      return;
+    }
     setBusy(true);
     try {
-      if (maxRound) {
-        const ids = matches.filter((m) => (m.round || 1) <= maxRound).map((m) => m.id);
-        if (ids.length) {
-          await db.entities.Goal.deleteMany({ match_id: { $in: ids } }).catch(() => {});
-          await db.entities.Appearance.deleteMany({ match_id: { $in: ids } }).catch(() => {});
-        }
-        await db.entities.Match.deleteMany({ tournament_id: tournament.id, round: { $lte: maxRound } });
-      } else {
-        await db.entities.Goal.deleteMany({ tournament_id: tournament.id }).catch(() => {});
-        await db.entities.Appearance.deleteMany({ tournament_id: tournament.id }).catch(() => {});
-        await db.entities.Match.deleteMany({ tournament_id: tournament.id });
-      }
-      const fixtures = generateFixtures({
-        format: tournament.format, teams, tournamentId: tournament.id, venues: tournament.venues || [], maxRound,
-      });
-      if (fixtures.length) await db.entities.Match.bulkCreate(fixtures);
-      await db.entities.Tournament.update(tournament.id, { status: "ongoing" });
+      await db.competitions.generateFixtures(tournament.id);
       await reload();
+    } catch (error) {
+      toast({ title: "Could not generate fixtures", description: error.message || "Please check the competition configuration.", variant: "destructive" });
     } finally {
       setBusy(false);
     }
@@ -54,6 +47,7 @@ export default function FixturesTab({ tournament, teams, matches, perms, reload 
       await db.entities.Goal.deleteMany({ tournament_id: tournament.id }).catch(() => {});
       await db.entities.Appearance.deleteMany({ tournament_id: tournament.id }).catch(() => {});
       await db.entities.Match.deleteMany({ tournament_id: tournament.id });
+      await db.entities.TournamentGroup.deleteMany({ tournament_id: tournament.id }).catch(() => {});
       await reload();
     } finally {
       setBusy(false);

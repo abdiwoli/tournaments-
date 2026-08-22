@@ -1,11 +1,32 @@
-import React from "react";
+const db = globalThis.__LOCAL_DB__;
+
+import React, { useEffect, useState } from "react";
 import { buildStandings } from "@/lib/standings";
 
 const formColors = { W: "bg-emerald-500", D: "bg-amber-500", L: "bg-rose-500" };
 
 export default function StandingsTab({ teams, matches, tournament }) {
   const rows = buildStandings(teams, matches, tournament);
+  const [groupTables, setGroupTables] = useState(null);
+  useEffect(() => {
+    let mounted = true;
+    if (tournament.format !== "group_stage_knockout") { setGroupTables(null); return undefined; }
+    db.competitions.standings(tournament.id).then((result) => { if (mounted) setGroupTables(result.groups || []); }).catch(() => { if (mounted) setGroupTables([]); });
+    return () => { mounted = false; };
+  }, [tournament.id, tournament.format, matches]);
   if (!teams.length) return <p className="py-12 text-center text-sm text-muted-foreground">Add teams to see standings.</p>;
+
+  if (tournament.format === "group_stage_knockout") return (
+    <div className="space-y-5">
+      {groupTables == null && <p className="py-8 text-center text-sm text-muted-foreground">Loading group standings…</p>}
+      {groupTables?.map((group) => <div key={group.id} className="overflow-x-auto rounded-3xl border border-border/60 bg-card/60 backdrop-blur-xl">
+        <h3 className="border-b border-border/60 px-4 py-3 text-sm font-semibold">{group.name}</h3>
+        <table className="w-full text-sm"><thead className="text-xs uppercase tracking-wide text-muted-foreground"><tr><th className="px-4 py-3 text-left">#</th><th className="px-2 py-3 text-left">Team</th>{["P", "W", "D", "L", "GD", "Pts"].map((heading) => <th key={heading} className="px-2 py-3 text-center">{heading}</th>)}<th className="px-4 py-3 text-left">Status</th></tr></thead>
+          <tbody>{group.standings.map((row, index) => <tr key={row.team.id} className="border-t border-border/40"><td className="px-4 py-3">{index + 1}</td><td className="px-2 py-3 font-medium">{row.team.name}</td><td className="px-2 py-3 text-center">{row.played}</td><td className="px-2 py-3 text-center">{row.wins}</td><td className="px-2 py-3 text-center">{row.draws}</td><td className="px-2 py-3 text-center">{row.losses}</td><td className="px-2 py-3 text-center">{row.gd}</td><td className="px-2 py-3 text-center font-semibold">{row.points}</td><td className="px-4 py-3 text-xs text-muted-foreground">{row.team.qualification_status || "pending"}</td></tr>)}</tbody>
+        </table>
+      </div>)}
+    </div>
+  );
 
   return (
     <>

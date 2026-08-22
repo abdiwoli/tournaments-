@@ -10,6 +10,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import crypto from 'node:crypto';
 import { buildPlayerBreakdown, buildPlayerRankings } from './playerStats.js';
+import { buildStandings, isFinalized, knockoutRoundLabel, roundRobinRounds, validateGroupConfiguration } from './competition.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 dotenv.config({ path: path.resolve(root, '.env.local') });
@@ -57,7 +58,7 @@ CREATE TABLE IF NOT EXISTS password_resets (
 `;
 await pool.query(schema);
 
-const entities = new Set(['Tournament', 'Team', 'Player', 'Match', 'TournamentPermission', 'Goal', 'Appearance']);
+const entities = new Set(['Tournament', 'Team', 'Player', 'Match', 'TournamentPermission', 'Goal', 'Appearance', 'TournamentGroup']);
 const memberRoles = new Set(['follower', 'results', 'goals', 'teams', 'fixtures', 'admin']);
 const secret = process.env.JWT_SECRET || 'development-only-change-me';
 const now = () => new Date().toISOString();
@@ -105,6 +106,22 @@ async function getRecord(entity, recordId) {
 
 async function getTournament(tournamentId) {
   return tournamentId ? getRecord('Tournament', tournamentId) : null;
+}
+
+async function createRecord(entity, data, recordId = id()) {
+  const stamp = now();
+  await pool.query('INSERT INTO records (entity,id,data,created_date,updated_date) VALUES ($1,$2,$3::jsonb,$4,$5)', [entity, recordId, JSON.stringify(data), stamp, stamp]);
+  return { id: recordId, ...data, created_date: stamp, updated_date: stamp };
+}
+
+async function updateRecord(entity, recordId, changes) {
+  const old = await getRecord(entity, recordId);
+  if (!old) return null;
+  const data = { ...old, ...changes };
+  delete data.id; delete data.created_date; delete data.updated_date;
+  const stamp = now();
+  await pool.query('UPDATE records SET data=$1::jsonb,updated_date=$2 WHERE entity=$3 AND id=$4', [JSON.stringify(data), stamp, entity, recordId]);
+  return { id: recordId, ...data, created_date: old.created_date, updated_date: stamp };
 }
 
 async function records(entity, filter = {}, sort = 'created_date', limit = 100) {
@@ -184,6 +201,7 @@ async function canWrite(entity, record, changes, user) {
   if (entity === 'Tournament') return !!user && (data.created_by_id === user.id || user.role === 'admin');
   const tournament = await getTournament(data.tournament_id);
   if (entity === 'Team' || entity === 'Player') return hasRole(tournament, user, ['teams', 'admin']);
+  if (entity === 'TournamentGroup') return hasRole(tournament, user, ['fixtures', 'admin']);
   if (entity === 'Match') {
     const resultEdit = ['home_score', 'away_score', 'motm_player_id', 'motm_player_name'].some((key) => key in changes) || ['closed', 'completed', 'live'].includes(changes.status);
     return hasRole(tournament, user, resultEdit ? ['results', 'goals', 'admin'] : ['fixtures', 'admin']);
@@ -191,6 +209,138 @@ async function canWrite(entity, record, changes, user) {
   if (entity === 'Goal' || entity === 'Appearance') return hasRole(tournament, user, ['results', 'goals', 'admin']);
   return false;
 }
+
+const stageMatches = async (tournamentId, stage) => records('Match', { tournament_id: tournamentId }, 'round', 10000).then((matches) => matches.filter((match) => (match.stage || 'LEAGUE_STAGE') === stage));
+const groupName = (index) => `Group ${String.fromCharCode(65 + index)}`;
+
+async function generateKnockoutBracket(tournament, teamIds) {
+  if (teamIds.length < 2 || (teamIds.length & (teamIds.length - 1)) !== 0) throw new Error('Knockout participants must be a power of two.');
+  const rounds = Math.log2(teamIds.length);
+  const allRounds = [];
+  for (let roundIndex = 0; roundIndex < rounds; roundIndex += 1) {
+    const size = teamIds.length >> roundIndex;
+    const previous = allRounds[roundIndex - 1] || [];
+    const matches = [];
+    for (let slot = 0; slot < size / 2; slot += 1) {
+      const recordId = id();
+      const firstRound = roundIndex === 0;
+      matches.push(await createRecord('Match', {
+        tournament_id: tournament.id,
+        stage: 'KNOCKOUT_STAGE',
+        knockout_round: roundIndex + 1,
+        bracket_slot: slot + 1,
+        round: roundIndex + 1,
+        round_label: knockoutRoundLabel(size),
+        home_team_id: firstRound ? teamIds[slot * 2] : '',
+        away_team_id: firstRound ? teamIds[slot * 2 + 1] : '',
+        home_source_match_id: firstRound ? null : previous[slot * 2]?.id,
+        away_source_match_id: firstRound ? null : previous[slot * 2 + 1]?.id,
+        status: firstRound ? 'scheduled' : 'pending',
+      }, recordId));
+    }
+    allRounds.push(matches);
+  }
+  return allRounds.flat();
+}
+
+async function completeGroupStage(tournament) {
+  if (tournament.current_stage === 'KNOCKOUT_STAGE') return;
+  const groups = await records('TournamentGroup', { tournament_id: tournament.id }, 'order', 1000);
+  const groupMatches = await stageMatches(tournament.id, 'GROUP_STAGE');
+  if (!groups.length || !groupMatches.length || groupMatches.some((match) => !isFinalized(match))) return;
+  const teams = await records('Team', { tournament_id: tournament.id }, 'name', 10000);
+  const qualifiers = [];
+  for (const group of groups) {
+    const groupTeams = teams.filter((team) => team.group_id === group.id);
+    const table = buildStandings(groupTeams, groupMatches.filter((match) => match.group_id === group.id), tournament);
+    for (const [position, row] of table.entries()) {
+      const qualified = position < tournament.qualifiers_per_group;
+      await updateRecord('Team', row.team.id, { qualification_status: qualified ? 'qualified' : 'eliminated', group_position: position + 1 });
+      if (qualified) qualifiers.push({ groupOrder: group.order, position, teamId: row.team.id });
+    }
+  }
+  // Seed by finishing position, then group. This keeps same-group teams apart in the opening pairings for the common 2-qualifier configuration.
+  const ordered = qualifiers.sort((left, right) => left.position - right.position || left.groupOrder - right.groupOrder).map((entry) => entry.teamId);
+  await generateKnockoutBracket(tournament, ordered);
+  await updateRecord('Tournament', tournament.id, { current_stage: 'KNOCKOUT_STAGE', status: 'ongoing' });
+}
+
+async function advanceKnockoutWinner(match) {
+  if ((match.stage || '') !== 'KNOCKOUT_STAGE' || !isFinalized(match)) return;
+  const winner = match.winner_team_id || (match.home_score > match.away_score ? match.home_team_id : match.away_score > match.home_score ? match.away_team_id : null);
+  if (!winner) return;
+  const children = (await stageMatches(match.tournament_id, 'KNOCKOUT_STAGE')).filter((candidate) => candidate.home_source_match_id === match.id || candidate.away_source_match_id === match.id);
+  for (const child of children) {
+    const changes = child.home_source_match_id === match.id ? { home_team_id: winner } : { away_team_id: winner };
+    const updated = await updateRecord('Match', child.id, changes);
+    if (updated.home_team_id && updated.away_team_id) await updateRecord('Match', child.id, { status: 'scheduled' });
+  }
+  if (!children.length) await updateRecord('Tournament', match.tournament_id, { current_stage: 'COMPLETED', status: 'completed', winner_team_id: winner });
+}
+
+async function processCompetitionResult(match) {
+  const tournament = await getTournament(match.tournament_id);
+  if (!tournament || !isFinalized(match)) return;
+  if ((match.stage || '') === 'GROUP_STAGE') await completeGroupStage(tournament);
+  if ((match.stage || '') === 'KNOCKOUT_STAGE') await advanceKnockoutWinner(match);
+}
+
+app.get('/api/tournaments/:id/standings', route(async (req, res) => {
+  const tournament = await getTournament(req.params.id);
+  if (!tournament) return res.status(404).json({ error: 'Tournament not found' });
+  const [teams, matches, groups] = await Promise.all([
+    records('Team', { tournament_id: tournament.id }, 'name', 10000),
+    records('Match', { tournament_id: tournament.id }, 'round', 10000),
+    records('TournamentGroup', { tournament_id: tournament.id }, 'order', 1000),
+  ]);
+  if (tournament.format !== 'group_stage_knockout') return res.json({ type: 'league', current_stage: tournament.current_stage || 'LEAGUE_STAGE', standings: buildStandings(teams, matches.filter((match) => !match.stage || match.stage === 'LEAGUE_STAGE'), tournament) });
+  const groupStandings = groups.map((group) => ({ ...group, standings: buildStandings(teams.filter((team) => team.group_id === group.id), matches.filter((match) => match.stage === 'GROUP_STAGE' && match.group_id === group.id), tournament) }));
+  res.json({ type: 'group_stage_knockout', current_stage: tournament.current_stage || 'GROUP_STAGE', groups: groupStandings });
+}));
+
+app.post('/api/tournaments/:id/fixtures/generate', requireAuth, route(async (req, res) => {
+  const tournament = await getTournament(req.params.id);
+  if (!tournament) return res.status(404).json({ error: 'Tournament not found' });
+  if (!(await hasRole(tournament, req.user, ['fixtures', 'admin']))) return res.status(403).json({ error: 'You do not have permission to manage fixtures.' });
+  const teams = await records('Team', { tournament_id: tournament.id }, 'created_date', 10000);
+  const existing = await records('Match', { tournament_id: tournament.id }, 'created_date', 1);
+  if (existing.length) return res.status(409).json({ error: 'Fixtures already exist. Clear them before generating a new schedule.' });
+  if (teams.length < 2) return res.status(400).json({ error: 'At least two teams are required.' });
+
+  if (tournament.format === 'group_stage_knockout') {
+    const groupCount = Number(tournament.group_count);
+    const qualifiersPerGroup = Number(tournament.qualifiers_per_group);
+    validateGroupConfiguration({ groupCount, qualifiersPerGroup, teamCount: teams.length });
+    const groups = [];
+    for (let index = 0; index < groupCount; index += 1) groups.push(await createRecord('TournamentGroup', { tournament_id: tournament.id, name: groupName(index), order: index + 1, qualifiers_per_group: qualifiersPerGroup, stage: 'GROUP_STAGE' }));
+    for (const [index, team] of teams.entries()) await updateRecord('Team', team.id, { group_id: groups[index % groupCount].id, group_name: groups[index % groupCount].name, qualification_status: 'pending' });
+    const generated = [];
+    for (const group of groups) {
+      const groupTeams = (await records('Team', { group_id: group.id }, 'created_date', 1000));
+      roundRobinRounds(groupTeams.map((team) => team.id)).forEach((pairs, roundIndex) => pairs.forEach(([home, away], slot) => generated.push({
+        tournament_id: tournament.id, stage: 'GROUP_STAGE', group_id: group.id, round: roundIndex + 1, round_label: `${group.name} · Round ${roundIndex + 1}`, home_team_id: home, away_team_id: away, venue: (tournament.venues || [])[generated.length % (tournament.venues || []).length] || '', status: 'scheduled', bracket_slot: slot + 1,
+      })));
+    }
+    for (const match of generated) await createRecord('Match', match);
+    const updatedTournament = await updateRecord('Tournament', tournament.id, { current_stage: 'GROUP_STAGE', status: 'ongoing' });
+    return res.status(201).json({ tournament: updatedTournament, groups, matches: generated });
+  }
+
+  if (tournament.format === 'knockout') {
+    const size = 2 ** Math.ceil(Math.log2(teams.length));
+    // Preserve existing knockout compatibility: incomplete brackets contain TBD/bye slots.
+    const matches = await generateKnockoutBracket(tournament, [...teams.map((team) => team.id), ...Array(size - teams.length).fill('')]);
+    const updatedTournament = await updateRecord('Tournament', tournament.id, { current_stage: 'KNOCKOUT_STAGE', status: 'ongoing' });
+    return res.status(201).json({ tournament: updatedTournament, groups: [], matches });
+  }
+
+  const rounds = roundRobinRounds(teams.map((team) => team.id));
+  const allRounds = tournament.format === 'league' ? [...rounds, ...rounds.map((pairs) => pairs.map(([home, away]) => [away, home]))] : rounds;
+  const generated = allRounds.flatMap((pairs, roundIndex) => pairs.map(([home, away], slot) => ({ tournament_id: tournament.id, stage: 'LEAGUE_STAGE', round: roundIndex + 1, round_label: `Round ${roundIndex + 1}`, home_team_id: home, away_team_id: away, venue: (tournament.venues || [])[slot % (tournament.venues || []).length] || '', status: 'scheduled' })));
+  for (const match of generated) await createRecord('Match', match);
+  const updatedTournament = await updateRecord('Tournament', tournament.id, { current_stage: 'LEAGUE_STAGE', status: 'ongoing' });
+  res.status(201).json({ tournament: updatedTournament, groups: [], matches: generated });
+}));
 
 app.post('/api/auth/register', route(async (req, res) => {
   const { email, password, full_name = '' } = req.body;
@@ -325,7 +475,16 @@ app.post('/api/entities/:entity', requireAuth, route(async (req, res) => {
   const entity = req.params.entity;
   if (!entities.has(entity)) return res.status(404).json({ error: 'Unknown entity' });
   const record = { ...req.body };
-  if (entity === 'Tournament') record.created_by_id = req.user.id;
+  if (entity === 'Tournament') {
+    if (record.format === 'group_knockout') record.format = 'group_stage_knockout';
+    if (record.format === 'group_stage_knockout') {
+      const groupCount = Number(record.group_count);
+      const qualifiersPerGroup = Number(record.qualifiers_per_group);
+      if (!Number.isInteger(groupCount) || groupCount < 2 || !Number.isInteger(qualifiersPerGroup) || qualifiersPerGroup < 1) return res.status(400).json({ error: 'Group + Knockout requires valid group_count and qualifiers_per_group values.' });
+      record.current_stage = record.current_stage || 'GROUP_STAGE';
+    }
+    record.created_by_id = req.user.id;
+  }
   else if (entity === 'TournamentPermission') {
     const tournament = await getTournament(record.tournament_id);
     if (!tournament) return res.status(404).json({ error: 'Tournament not found' });
@@ -391,9 +550,17 @@ app.patch('/api/entities/:entity/:id', requireAuth, route(async (req, res) => {
   delete data.id;
   delete data.created_date;
   delete data.updated_date;
+  if (entity === 'Match' && isFinalized(data)) {
+    if (data.stage === 'KNOCKOUT_STAGE' && data.home_score === data.away_score && !data.winner_team_id) return res.status(400).json({ error: 'A knockout match cannot end in a draw without winner_team_id.' });
+    if (data.winner_team_id && ![data.home_team_id, data.away_team_id].includes(data.winner_team_id)) return res.status(400).json({ error: 'winner_team_id must be one of the competing teams.' });
+  }
   const stamp = now();
   await pool.query('UPDATE records SET data=$1::jsonb,updated_date=$2 WHERE entity=$3 AND id=$4', [JSON.stringify(data), stamp, entity, old.id]);
-  res.json({ id: old.id, ...data, created_date: old.created_date, updated_date: stamp });
+  const updated = { id: old.id, ...data, created_date: old.created_date, updated_date: stamp };
+  if (entity === 'Match' && isFinalized(updated)) {
+    await processCompetitionResult(updated);
+  }
+  res.json(updated);
 }));
 
 app.delete('/api/entities/:entity/:id', requireAuth, route(async (req, res) => {

@@ -20,7 +20,7 @@ export default function CreateTournament() {
     name: "", description: "", sport: "Football", season: "", age_category: "", gender: "open",
     format: "league", visibility: "public", registration_open: true, min_teams: 4, max_teams: 16,
     registration_deadline: "", start_date: "", entry_fee: 0, venuesText: "",
-    points_win: 3, points_draw: 1, points_loss: 0, rules: "",
+    points_win: 3, points_draw: 1, points_loss: 0, group_count: 4, qualifiers_per_group: 2, rules: "",
   });
   const set = (patch) => setData((d) => ({ ...d, ...patch }));
 
